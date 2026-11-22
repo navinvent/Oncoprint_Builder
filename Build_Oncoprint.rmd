@@ -69,7 +69,14 @@ cols <- list(
   impact      = "Impact",   # SnpEff HIGH/MODERATE/LOW/MODIFIER; NA if absent
   protein     = "HGVS_p",   # e.g. p.Arg273His - labels only; NA if absent
   chrom       = "CHROM",    # NA if absent
-  pos         = "POS"       # NA if absent
+  pos         = "POS",      # NA if absent
+  ref         = "REF",      # needed for the germline gates; NA if absent
+  alt         = "ALT",      # needed for the germline gates; NA if absent
+  type        = "Type",     # marks which samples are normals; NA if absent
+  donor       = NA,         # groups a normal with its own tumours; NA if absent
+  pop_af      = NA,         # POPULATION allele frequency - read section 3b
+  ao          = NA,         # alt observation count, e.g. freebayes AO
+  ro          = NA          # ref observation count, e.g. freebayes RO
 )
 
 # ---- Option B: raw SnpEff-annotated VCFs (Section 0 parses them) ----
@@ -106,6 +113,72 @@ min_samples_mutated <- 2
 # Keep at most this many genes, by recurrence then total variant count.
 # NA for no cap. Around 40 is the limit of a readable one-page figure.
 top_n_genes <- 40
+
+# ============================================================
+# 3b. GERMLINE FILTERING - READ THIS BEFORE YOU TRUST THE FIGURE
+# ============================================================
+# The gene panel is chosen by recurrence across samples, and an inherited
+# variant is recurrent in every sample that carries it by definition. So
+# without a germline gate the top rows of an oncoprint built from tumour-only
+# VCFs can be ordinary population polymorphisms that merely cleared the
+# impact filter. On one cohort where this could be measured directly against
+# a matched normal, 94% of the variants clearing QUAL >= 30 plus HIGH/MODERATE
+# impact were also present in that donor's own germline sample.
+#
+# Three independent gates are available. Each is OFF until you configure it,
+# and Section 1 prints which ones fired. Nothing here is a substitute for
+# somatic calling against a matched normal - these reduce the contamination,
+# they do not make the calls somatic.
+
+# --- Gate 1: subtract variants seen in germline/normal samples ------------
+# Which value of cols$type marks a sample as a normal. NA disables the gate.
+# Needs cols$chrom, cols$pos, cols$ref and cols$alt so a variant can be
+# matched exactly - position alone would conflate a hotspot with a benign
+# substitution at the same base.
+germline_type_value  <- NA_character_   # e.g. "Germline"
+# Drop a variant when it appears in at least this many normals.
+germline_min_normals <- 1
+# "matched" subtracts a normal only from its own donor's samples, which needs
+#   cols$donor. Correct, and all a single normal can honestly support.
+# "cohort" treats every normal as a panel of normals for every sample. Only
+#   sound with a real panel: one normal is hom-ref at a large share of common
+#   SNPs, so it both misses most of them and injects its own private variants
+#   into everyone else's blacklist.
+germline_scope <- "matched"
+
+# --- Gate 2: population allele frequency ---------------------------------
+# Set cols$pop_af to a POPULATION allele-frequency column and a variant above
+# max_pop_af is called inherited. cols$pop_af = NA disables the gate.
+#
+# WARNING, and this is the trap worth reading twice: freebayes writes its own
+# INFO key named AF, and it is the WITHIN-SAMPLE allele fraction - about 0.50
+# for a het and 1.00 for a hom. Gating on it would delete nearly every real
+# variant while reading like a textbook population filter, so a column named
+# exactly "AF" is refused below rather than trusted. Annotate with an explicit
+# prefix so the two cannot be confused:
+#   SnpSift annotate -info AF,AF_grpmax -name gnomad_ gnomad.sites.vcf.bgz in.vcf
+# then set cols$pop_af <- "gnomad_AF_grpmax".
+# 0.01 follows GATK FilterMutectCalls' --max-population-af default. There is no
+# consensus value and it does not transfer between assays, so treat it as yours
+# to set, not as a constant.
+max_pop_af <- 0.01
+
+# --- Gate 3: flag only, never drops anything -----------------------------
+# With cols$ao and cols$ro set, gene_list.csv gains a median_vaf column. A
+# germline het sits near 0.50 and a hom near 1.00 in every carrier, while a
+# somatic variant is usually subclonal and variable. It is a proxy confounded
+# by tumour purity, ploidy and LOH, so it is reported for review and never
+# used to drop a row.
+
+# --- Cohort recurrence: deliberately NOT offered as a gate ---------------
+# Flagging a variant because it recurs in most of the cohort cannot distinguish
+# a polymorphism from the recurrent hotspot that defines a histology. In a
+# 7-sample DMG cohort, H3-3A K27M occurs at the identical base in roughly 75%
+# of cases, so a "present in all samples" rule deletes the single most
+# important row about one time in eight. At a realistic cohort size the
+# estimator has no resolving power anyway: an observed 50% at n = 14 has a 95%
+# interval of 23% to 77%. Use gates 1 and 2, which rest on evidence about the
+# variant rather than on how often you happened to sequence it.
 
 # ============================================================
 # 4. FIGURE
@@ -202,10 +275,142 @@ write_csv_std <- function(x, path) {
 
 say <- function(...) message(sprintf(...))
 
+# ---- Germline gates -----------------------------------------------------
+# An exact variant key. Position alone would merge a hotspot with a benign
+# substitution at the same base, so ref and alt are required, not optional.
+.variant_key <- function(v) {
+  need <- c("chrom", "pos", "ref", "alt")
+  miss <- setdiff(need, names(v))
+  if (length(miss)) {
+    stop("The germline gates need cols$", paste(miss, collapse = ", cols$"),
+         " set in CONFIG, so a variant can be matched exactly.\n",
+         "  Matching on position alone would conflate a hotspot with a benign ",
+         "change at the same base.", call. = FALSE)
+  }
+  paste(v$chrom, v$pos, toupper(v$ref), toupper(v$alt), sep = ":")
+}
+
+# Gate 1. Returns the table with normal samples and their variants removed.
+germline_subtract <- function(v, type_value, min_normals, scope) {
+  if (is.null(type_value) || all(is.na(type_value))) {
+    return(list(variants = v, fired = FALSE,
+                note = "not configured (germline_type_value is NA)"))
+  }
+  if (!"type" %in% names(v)) {
+    stop("germline_type_value is set but cols$type is not, so no column says ",
+         "which samples are normals.", call. = FALSE)
+  }
+  is_norm <- !is.na(v$type) & toupper(v$type) == toupper(type_value)
+  n_norm <- dplyr::n_distinct(v$sample[is_norm])
+  if (!n_norm) {
+    warning("No sample has type '", type_value, "', so the germline ",
+            "subtraction removed nothing. Check cols$type and ",
+            "germline_type_value.", call. = FALSE)
+    return(list(variants = v, fired = FALSE,
+                note = sprintf("no sample has type '%s'", type_value)))
+  }
+
+  v$.key <- .variant_key(v)
+  norm <- v[is_norm, , drop = FALSE]
+  tum <- v[!is_norm, , drop = FALSE]
+
+  if (scope == "matched") {
+    if (!"donor" %in% names(v)) {
+      stop("germline_scope is \"matched\" but cols$donor is not set, so a ",
+           "normal cannot be tied to its own tumours.\n  Set cols$donor, or ",
+           "set germline_scope <- \"cohort\" and read what that costs in ",
+           "section 3b.", call. = FALSE)
+    }
+    hits <- norm %>%
+      distinct(donor, .key) %>%
+      mutate(.germline = TRUE)
+    before <- nrow(tum)
+    tum <- tum %>%
+      left_join(hits, by = c("donor", ".key")) %>%
+      filter(is.na(.germline)) %>%
+      select(-.germline)
+    covered <- dplyr::n_distinct(norm$donor)
+    note <- sprintf(
+      "matched: %d normal(s) covering %d donor(s); %d of %d tumour rows dropped",
+      n_norm, covered, before - nrow(tum), before)
+  } else if (scope == "cohort") {
+    hits <- norm %>%
+      count(.key, name = ".n_norm") %>%
+      filter(.n_norm >= min_normals)
+    before <- nrow(tum)
+    tum <- tum %>% filter(!.key %in% hits$.key)
+    note <- sprintf(
+      "cohort: %d normal(s) as a panel; %d of %d tumour rows dropped",
+      n_norm, before - nrow(tum), before)
+    if (n_norm < 5) {
+      warning("germline_scope is \"cohort\" with only ", n_norm, " normal(s). ",
+              "One individual is hom-ref at many common SNPs, so this misses ",
+              "most of them and adds that person's private variants to every ",
+              "sample's blacklist. \"matched\" is the honest setting here.",
+              call. = FALSE)
+    }
+  } else {
+    stop("germline_scope must be \"matched\" or \"cohort\", not \"", scope, "\"",
+         call. = FALSE)
+  }
+
+  tum$.key <- NULL
+  list(variants = tum, fired = TRUE, note = note, n_normals = n_norm)
+}
+
+# The sample universe for the figure and for every percentage. A normal is a
+# reference, not a case: left in, it draws as an empty column and inflates the
+# denominator of every pct_samples, so 6 of 8 cases reads as 66.7%, not 75%.
+tumour_samples <- function(df, cols, type_value) {
+  s <- trimws(as.character(df[[cols$sample]]))
+  keep <- nzchar(s) & !is.na(s)
+  if (!is.null(type_value) && !all(is.na(type_value)) &&
+      !is.null(cols$type) && !all(is.na(cols$type)) &&
+      cols$type %in% names(df)) {
+    ty <- trimws(as.character(df[[cols$type]]))
+    keep <- keep & !(toupper(ty) == toupper(type_value) & !is.na(ty))
+  }
+  sort(unique(s[keep]))
+}
+
+# Gate 2. Population allele frequency, with the freebayes AF trap guarded.
+pop_af_filter <- function(v, af_col_name, max_af) {
+  if (!"pop_af" %in% names(v)) {
+    return(list(variants = v, fired = FALSE,
+                note = "not configured (cols$pop_af is NA)"))
+  }
+  if (!is.null(af_col_name) && !all(is.na(af_col_name)) &&
+      toupper(trimws(af_col_name)) == "AF") {
+    stop("cols$pop_af is set to \"AF\", which is almost certainly NOT a ",
+         "population frequency.\n  freebayes writes AF as the within-sample ",
+         "allele fraction (~0.50 het, ~1.00 hom); filtering on it would ",
+         "delete nearly every real variant.\n  Re-annotate with a prefix ",
+         "(SnpSift annotate -name gnomad_ ...) and use that column instead.",
+         call. = FALSE)
+  }
+  af <- suppressWarnings(as.numeric(v$pop_af))
+  if (all(is.na(af))) {
+    warning("cols$pop_af is set but no value in it is numeric, so the ",
+            "population-frequency gate removed nothing.", call. = FALSE)
+    return(list(variants = v, fired = FALSE, note = "column holds no numbers"))
+  }
+  before <- nrow(v)
+  # NA means "not in the reference set", which for a population database is
+  # evidence of rarity. Keep those rather than dropping what we cannot score.
+  v <- v[is.na(af) | af <= max_af, , drop = FALSE]
+  list(variants = v, fired = TRUE,
+       note = sprintf("%s > %s: %d of %d rows dropped",
+                      af_col_name, format(max_af), before - nrow(v), before))
+}
+
 # ---- The shared filter pipeline -----------------------------------------
 # Section 1 and Section 2 must agree on what a kept variant is, so the logic
 # lives here once. Returns the filtered long table plus a per-stage tally.
-prepare_variants <- function(df, cols, class_map, impact_whitelist) {
+prepare_variants <- function(df, cols, class_map, impact_whitelist,
+                             germline_type_value = NA_character_,
+                             germline_min_normals = 1,
+                             germline_scope = "matched",
+                             max_pop_af = 0.01) {
   need <- c("sample", "gene", "consequence")
   miss <- need[vapply(cols[need],
                       function(z) is.null(z) || all(is.na(z)), logical(1))]
@@ -221,7 +426,8 @@ prepare_variants <- function(df, cols, class_map, impact_whitelist) {
 
   keep_map <- c(sample = cols$sample, gene = cols$gene,
                 consequence = cols$consequence)
-  for (opt in c("impact", "protein", "chrom", "pos")) {
+  for (opt in c("impact", "protein", "chrom", "pos", "ref", "alt",
+                "type", "donor", "pop_af", "ao", "ro")) {
     nm <- cols[[opt]]
     if (!is.null(nm) && !all(is.na(nm)) && nm %in% names(df)) keep_map[opt] <- nm
   }
@@ -250,24 +456,65 @@ prepare_variants <- function(df, cols, class_map, impact_whitelist) {
   }
   tally["after_impact_filter"] <- nrow(v)
 
+  # Germline gates run here, before the class filter, so the staged report
+  # shows how much of the impact-passing set was inherited.
+  g1 <- germline_subtract(v, germline_type_value, germline_min_normals,
+                          germline_scope)
+  v <- g1$variants
+  tally["after_germline_subtraction"] <- nrow(v)
+
+  g2 <- pop_af_filter(v, cols$pop_af, max_pop_af)
+  v <- g2$variants
+  tally["after_pop_af_filter"] <- nrow(v)
+
   v <- v %>% filter(plot)
   tally["after_class_plot_filter"] <- nrow(v)
 
-  list(variants = v, tally = tally, unmapped_consequences = unmapped)
+  list(variants = v, tally = tally, unmapped_consequences = unmapped,
+       germline = list(subtraction = g1, pop_af = g2))
 }
 
 # Per-gene recurrence summary, used for ranking and for the CSV.
 summarise_genes <- function(v, n_samples_total) {
-  v %>%
+  # n_variants must count VARIANTS, not annotation rows. SnpEff emits one row
+  # per transcript and one per '&'-joined consequence, so n() multiplies a
+  # single variant in a many-transcript gene - and n_variants is the
+  # top_n_genes tiebreak, so that inflation changes which genes get drawn.
+  id <- intersect(c("chrom", "pos", "ref", "alt"), names(v))
+  vid <- if (length(id)) {
+    do.call(paste, c(unname(as.list(v[id])), sep = ":"))
+  } else {
+    # No coordinates mapped: the finest honest identity left is the sample,
+    # the class and the protein change, if there is one.
+    do.call(paste, c(unname(as.list(
+      v[intersect(c("class", "protein", "consequence"), names(v))])), sep = ":"))
+  }
+  v$.vid <- paste(v$sample, vid, sep = "@")
+
+  # Gate 3, flag only. A germline het sits near 0.50 in every carrier.
+  has_vaf <- all(c("ao", "ro") %in% names(v))
+  if (has_vaf) {
+    ao <- suppressWarnings(as.numeric(v$ao))
+    ro <- suppressWarnings(as.numeric(v$ro))
+    v$.vaf <- ifelse(is.na(ao) | is.na(ro) | (ao + ro) == 0, NA_real_,
+                     ao / (ao + ro))
+  }
+
+  out <- v %>%
     group_by(gene) %>%
     summarise(
       n_samples        = n_distinct(sample),
-      n_variants       = n(),
+      n_variants       = n_distinct(.vid),
       classes_observed = paste(sort(unique(class)), collapse = ";"),
+      median_vaf       = if (has_vaf) round(stats::median(.vaf, na.rm = TRUE), 3)
+                         else NA_real_,
       .groups = "drop"
     ) %>%
     mutate(pct_samples = round(100 * n_samples / n_samples_total, 1)) %>%
     arrange(desc(n_samples), desc(n_variants), gene)
+
+  if (!has_vaf) out$median_vaf <- NULL
+  out
 }
 
 # ---- Load the editable inputs -------------------------------------------
@@ -349,8 +596,16 @@ parse_one_vcf <- function(path) {
   fx <- as.data.frame(v@fix, stringsAsFactors = FALSE)
   rm(v)
 
+  # A missing QUAL means unfilterable, not failed. Mutect2 and several other
+  # callers write '.', and treating that as a failed filter silently discarded
+  # every record in the file with a warning that blamed min_qual.
   qual <- suppressWarnings(as.numeric(fx$QUAL))
-  fx <- fx[!is.na(qual) & qual >= min_qual, , drop = FALSE]
+  if (all(is.na(qual))) {
+    message("  no numeric QUAL in ", nm,
+            " (callers such as Mutect2 write '.') - min_qual not applied")
+  } else {
+    fx <- fx[is.na(qual) | qual >= min_qual, , drop = FALSE]
+  }
   if (!nrow(fx)) {
     warning("No QUAL >= ", min_qual, " variants in: ", nm, call. = FALSE)
     return(NULL)
@@ -364,8 +619,15 @@ parse_one_vcf <- function(path) {
     return(NULL)
   }
 
+  # AO/RO carry the within-sample allele fraction, which is what the germline
+  # VAF flag reads. They live in INFO, so pull them out before INFO is dropped.
+  fx$AO <- suppressWarnings(as.numeric(
+    str_extract(str_extract(fx$INFO, "(?<=[;\\t]AO=|^AO=)[^;]+"), "^[0-9.]+")))
+  fx$RO <- suppressWarnings(as.numeric(
+    str_extract(str_extract(fx$INFO, "(?<=[;\\t]RO=|^RO=)[^;]+"), "^[0-9.]+")))
+
   out <- fx %>%
-    select(CHROM, POS, REF, ALT, QUAL, ANN) %>%
+    select(CHROM, POS, REF, ALT, QUAL, FILTER, AO, RO, ANN) %>%
     mutate(ANN = str_split(ANN, ",")) %>%
     unnest(ANN)
 
@@ -431,12 +693,13 @@ raw <- read_any(variant_table)
 say("Read %s", variant_table)
 say("  %d rows, %d columns", nrow(raw), ncol(raw))
 
-prep <- prepare_variants(raw, cols, class_map, impact_whitelist)
+prep <- prepare_variants(raw, cols, class_map, impact_whitelist,
+                         germline_type_value, germline_min_normals,
+                         germline_scope, max_pop_af)
 v <- prep$variants
 t1 <- prep$tally
 
-samples_all <- sort(unique(trimws(as.character(raw[[cols$sample]]))))
-samples_all <- samples_all[nzchar(samples_all) & !is.na(samples_all)]
+samples_all <- tumour_samples(raw, cols, germline_type_value)
 n_samples_total <- length(samples_all)
 
 stage_line <- function(label, kept, prev = NA) {
@@ -452,8 +715,27 @@ stage_line(sprintf("impact in {%s}",
                    if (is.null(impact_whitelist)) "any"
                    else paste(impact_whitelist, collapse = ",")),
            t1[["after_impact_filter"]], t1[["after_blank_gene_or_sample"]])
-stage_line("consequence class plotted", t1[["after_class_plot_filter"]],
+stage_line("germline subtraction", t1[["after_germline_subtraction"]],
            t1[["after_impact_filter"]])
+stage_line("population AF", t1[["after_pop_af_filter"]],
+           t1[["after_germline_subtraction"]])
+stage_line("consequence class plotted", t1[["after_class_plot_filter"]],
+           t1[["after_pop_af_filter"]])
+
+# Say plainly whether anything germline-aware actually happened. A gate that
+# is configured wrongly and a gate that is off look identical in the counts
+# above, and the difference decides whether this figure means anything.
+say("")
+say("Germline gates:")
+say("  subtraction   %s", prep$germline$subtraction$note)
+say("  population AF %s", prep$germline$pop_af$note)
+if (!prep$germline$subtraction$fired && !prep$germline$pop_af$fired) {
+  say("")
+  say("  WARNING: no germline gate fired, so this panel is ranked by recurrence")
+  say("  across tumour-only calls. Inherited variants recur in every sample")
+  say("  that carries them, so common polymorphisms can outrank real drivers.")
+  say("  Configure section 3b, or read the figure as 'variants', not 'somatic'.")
+}
 
 if (length(prep$unmapped_consequences)) {
   say("")
@@ -549,6 +831,12 @@ gene_out <- gene_tbl %>%
     notes = ""
   )
 
+# Gate 3 is advisory, so it rides along for review rather than filtering.
+# A gene whose median sits near 0.50 across every carrier is worth a look.
+if ("median_vaf" %in% names(gene_tbl)) {
+  gene_out$median_vaf <- gene_tbl$median_vaf[match(gene_out$gene, gene_tbl$gene)]
+}
+
 target <- gene_csv
 if (file.exists(gene_csv)) {
   target <- file.path(dirname(gene_csv), "gene_list_draft.csv")
@@ -600,7 +888,9 @@ if (!length(genes_wanted)) {
 }
 
 raw <- read_any(variant_table)
-prep <- prepare_variants(raw, cols, class_map, impact_whitelist)
+prep <- prepare_variants(raw, cols, class_map, impact_whitelist,
+                         germline_type_value, germline_min_normals,
+                         germline_scope, max_pop_af)
 
 # Note: the gene whitelist/blacklist are deliberately NOT applied here. The CSV
 # is the source of truth at this stage, so a gene you added by hand is honoured
@@ -621,8 +911,7 @@ if (!nrow(v)) {
 }
 
 # ---- samples ------------------------------------------------------------
-samples_all <- sort(unique(trimws(as.character(raw[[cols$sample]]))))
-samples_all <- samples_all[nzchar(samples_all) & !is.na(samples_all)]
+samples_all <- tumour_samples(raw, cols, germline_type_value)
 
 sample_annot <- NULL
 if (!is.na(sample_annotation_csv) && file.exists(sample_annotation_csv)) {
@@ -638,8 +927,16 @@ if (!is.na(sample_annotation_csv) && file.exists(sample_annotation_csv)) {
     if (length(extra) > 12) say("        ... and %d more", length(extra) - 12)
     say("      They are still drawn, with blank annotation.")
   }
-  # The annotation file sets the universe and the left-to-right order, so a
-  # sequenced-but-unaltered sample still gets its column.
+  dup <- unique(sample_annot$sample[duplicated(sample_annot$sample)])
+  if (length(dup)) {
+    # Left unchecked this fans out the annotation join below and oncoPrint
+    # fails with an error that says nothing about this file.
+    stop(basename(sample_annotation_csv), " has duplicate sample ID(s): ",
+         paste(dup, collapse = ", "), call. = FALSE)
+  }
+  # The annotation file sets the universe, so a sequenced-but-unaltered sample
+  # still gets its column. It does NOT set the order - that comes from
+  # oncoPrint's memo-sort unless you set sample_order.
   samples_all <- union(sample_annot$sample, samples_all)
 }
 
@@ -657,14 +954,19 @@ if (!is.null(sample_order)) {
 # severe first, joined with ';' - the format oncoPrint expects.
 prec <- setNames(class_style$precedence, class_style$class)
 
-cell_tbl <- v %>%
+# Rank and draw from the same sample universe. Ranking over all of v while
+# dividing by the drawn samples put impossible percentages into gene_list.csv
+# and ordered the rows by a cohort the figure does not show.
+v_plot <- v %>% filter(sample %in% samples_all)
+
+cell_tbl <- v_plot %>%
   mutate(.p = prec[class]) %>%
   distinct(gene, sample, class, .p) %>%
   arrange(gene, sample, .p, class) %>%
   group_by(gene, sample) %>%
   summarise(value = paste(unique(class), collapse = ";"), .groups = "drop")
 
-gene_rank <- summarise_genes(v, length(samples_all))
+gene_rank <- summarise_genes(v_plot, length(samples_all))
 genes_ordered <- if (!is.null(gene_order)) {
   intersect(gene_order, gene_rank$gene)
 } else {
@@ -685,8 +987,23 @@ say("Matrix: %d gene(s) x %d sample(s); %d altered cell(s) (%.1f%% filled).",
 
 # ---- alter_fun ----------------------------------------------------------
 classes_drawn <- class_style %>%
-  filter(plot, class %in% unique(v$class)) %>%
-  arrange(desc(height), precedence)   # big bars first so small ones land on top
+  filter(plot, class %in% unique(v_plot$class)) %>%
+  # Big bars first so small ones land on top. Within a height tie the less
+  # severe class is drawn first, so the more severe one stays visible.
+  arrange(desc(height), desc(precedence))
+
+# Two plotted classes at the same height draw identical rectangles, so wherever
+# they co-occur the second one paints the first out completely and the figure
+# silently disagrees with the matrix CSV and the barplots.
+.tied <- classes_drawn$height[duplicated(classes_drawn$height)]
+if (length(.tied)) {
+  tied_classes <- classes_drawn$class[classes_drawn$height %in% .tied]
+  warning("These plotted classes share a height, so whichever is drawn second ",
+          "hides the other wherever they co-occur in one cell: ",
+          paste(tied_classes, collapse = ", "),
+          ".\n  Give each a distinct height in ", basename(class_map_file),
+          call. = FALSE)
+}
 
 # force() matters: without it every closure would capture the loop's last value.
 make_rect <- function(fill, frac) {
@@ -740,8 +1057,11 @@ if (!is.null(sample_annot)) {
 }
 
 # ---- draw ---------------------------------------------------------------
-if (is.na(fig_w)) fig_w <- max(7, 2.8 + ncol(mat) * cell_w / 25.4 + 2.2)
-if (is.na(fig_h)) fig_h <- max(4, 1.6 + nrow(mat) * cell_h / 25.4 + 1.4)
+# Derive into locals. Assigning back into fig_w/fig_h would leave them numeric
+# after the first run, so the documented "re-run Section 2 only" loop would
+# reuse the first figure's size and clip a larger matrix.
+.fig_w <- if (is.na(fig_w)) max(7, 2.8 + ncol(mat) * cell_w / 25.4 + 2.2) else fig_w
+.fig_h <- if (is.na(fig_h)) max(4, 1.6 + nrow(mat) * cell_h / 25.4 + 1.4) else fig_h
 
 op <- oncoPrint(
   mat,
@@ -756,7 +1076,10 @@ op <- oncoPrint(
   show_column_names = TRUE,
   remove_empty_columns = FALSE,
   remove_empty_rows    = FALSE,
-  pct_side        = if (show_pct) "left" else NULL,
+  # pct_side is passed unconditionally: show_pct = FALSE already hides the
+  # column, whereas pct_side = NULL reaches oncoPrint's own `if` and dies on a
+  # zero-length condition.
+  pct_side        = "left",
   show_pct        = show_pct,
   top_annotation  = top_annot,
   width           = unit(ncol(mat) * cell_w, "mm"),
@@ -765,7 +1088,7 @@ op <- oncoPrint(
 )
 
 pdf_path <- file.path(out_dir, paste0(out_name, ".pdf"))
-pdf(pdf_path, width = fig_w, height = fig_h)
+pdf(pdf_path, width = .fig_w, height = .fig_h)
 draw(op, column_title = plot_title, merge_legend = TRUE,
      heatmap_legend_side = "right", annotation_legend_side = "right")
 dev.off()
@@ -773,7 +1096,7 @@ say("Wrote %s", pdf_path)
 
 if (write_png) {
   png_path <- file.path(out_dir, paste0(out_name, ".png"))
-  png(png_path, width = fig_w, height = fig_h, units = "in", res = png_dpi,
+  png(png_path, width = .fig_w, height = .fig_h, units = "in", res = png_dpi,
       type = if (capabilities("cairo")) "cairo" else getOption("bitmapType"))
   draw(op, column_title = plot_title, merge_legend = TRUE,
        heatmap_legend_side = "right", annotation_legend_side = "right")

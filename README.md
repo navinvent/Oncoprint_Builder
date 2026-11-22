@@ -110,7 +110,7 @@ If you already have such a table - from your own pipeline, from `vcfR`, from any
 If you have raw SnpEff VCFs, set `vcf_dir` and run Section 0. It:
 
 1. Finds every `.vcf` / `.vcf.gz` under that folder, recursively.
-2. Drops variants below `min_qual` (default 30).
+2. Drops variants below `min_qual` (default 30). A variant whose `QUAL` is missing or non-numeric - `.`, which Mutect2 and several other callers write - cannot be compared to a threshold, so `min_qual` is skipped for that file and the skip is reported. It is not treated as a failed filter.
 3. Pulls the `ANN=` field out of `INFO` and splits it - SnpEff packs multiple annotations per variant, comma-separated, each one 16 pipe-separated fields.
 4. Splits `&`-joined consequence terms (`splice_acceptor_variant&intron_variant`) into separate rows.
 5. Derives per-sample metadata from each **file name** using `filename_fields`, which defaults to the `<Sample>_<CancerType>_<State>.<caller>.ann.vcf` convention. Change those regexes to match your own naming.
@@ -124,9 +124,44 @@ Two places, deliberately:
 
 **`impact_whitelist` in CONFIG** - SnpEff assigns every annotation an impact of `HIGH`, `MODERATE`, `LOW` or `MODIFIER`. The default keeps `HIGH` and `MODERATE`, which is the usual "protein-altering" cut. Set it to `NULL` to keep everything and let `consequence_classes.csv` do all the work.
 
-**`consequence_classes.csv`** - one row per SnpEff term, mapping it to a `class` (the thing that gets a colour in the legend) and a `plot` flag (whether that class is drawn at all). The defaults draw Nonsense, Frameshift, Splice, Inframe_indel and Missense, and carry Synonymous / UTR / Intron / Noncoding / Other as `plot=FALSE` rows so they're one edit away rather than missing.
+**`consequence_classes.csv`** - one row per SnpEff term, mapping it to a `class` (the thing that gets a colour in the legend) and a `plot` flag (whether that class is drawn at all). The defaults draw nine classes - Amplification, Deletion, Structural, Fusion, Nonsense, Frameshift, Splice, Inframe_indel and Missense - and carry Synonymous / UTR / Intron / Noncoding / Other as `plot=FALSE` rows so they're one edit away rather than missing. The four CNV and structural classes only appear if your variant table actually uses those consequence terms; SnpEff alone will never emit them.
 
 Any consequence term in your data that has **no row in this file is dropped and reported by name** at the end of Section 1. That report is the point: it tells you exactly what you'd be throwing away, instead of silently binning it.
+
+### Step 1b: filter out inherited variants
+
+**Read this before you trust the figure.** The gene panel is chosen by recurrence across samples, and an inherited variant is recurrent in every sample that carries it by definition. Point this tool at tumour-only VCFs with no germline gate and the top rows can be ordinary population polymorphisms that merely cleared the impact filter. On one cohort where it could be checked directly against a matched normal, **94% of the variants clearing `QUAL >= 30` plus HIGH/MODERATE impact were also present in that donor's own germline sample.**
+
+Dropping the germline *samples* from your cohort does not fix this. That removes the normals; it leaves every inherited variant sitting inside the tumour samples untouched. The normals are the evidence, not the contamination.
+
+Three gates, in section 3b of CONFIG. Each is **off until you configure it**, and Section 1 prints which ones fired, so a misconfigured gate cannot pass for a working one.
+
+**Gate 1 - subtract variants seen in normals.** Set `cols$type` to the column that marks sample type and `germline_type_value` to the value meaning "normal" (`"Germline"` for the default filename convention). Needs `cols$chrom`, `cols$pos`, `cols$ref` and `cols$alt` so a variant is matched exactly; position alone would conflate a hotspot with a benign change at the same base, and the tool refuses rather than doing that.
+
+`germline_scope` is the honesty setting:
+
+| Scope | What it does | When it's right |
+|---|---|---|
+| `"matched"` | Subtracts a normal only from its own donor's samples. Needs `cols$donor`. | Nearly always. It is all a handful of normals can honestly support. |
+| `"cohort"` | Treats every normal as a panel of normals for every sample. | Only with a real panel. One individual is hom-ref at a large share of common SNPs, so a one-donor "panel" both misses most of them and injects that person's private variants into everyone else's blacklist. Section 1 warns below five normals. |
+
+**Gate 2 - population allele frequency.** Set `cols$pop_af` to a population-frequency column and `max_pop_af` to the fraction above which a variant is called inherited (default `0.01`, following GATK `FilterMutectCalls`' `--max-population-af`; there is no consensus value and it does not transfer between assays, so treat it as yours to set).
+
+> **The trap worth reading twice.** freebayes writes its own `INFO` key named `AF`, and it is the **within-sample allele fraction** - about 0.50 for a het, 1.00 for a hom - not population frequency. Gating on it would delete nearly every real variant while reading like a textbook filter. A column named exactly `AF` is **refused**, not trusted. Annotate with an explicit prefix so the two can never be confused:
+>
+> ```
+> SnpSift annotate -info AF,AF_grpmax -name gnomad_ gnomad.exomes.v4.1.sites.vcf.bgz in.vcf > out.vcf
+> ```
+>
+> then set `cols$pop_af <- "gnomad_AF_grpmax"`. The `-name gnomad_` prefix is mandatory, not style: without it SnpSift overwrites freebayes' own `AF` on matching rows only, leaving one column whose meaning varies per row.
+
+A variant with no population-frequency value is **kept**. Absence from a population database is evidence of rarity, and dropping what you cannot score would quietly delete the rare pathogenic variants this gate exists to preserve.
+
+**Gate 3 - a flag, never a filter.** With `cols$ao` and `cols$ro` set (freebayes `AO`/`RO`), `gene_list.csv` gains a `median_vaf` column. A germline het sits near 0.50 and a hom near 1.00 in every carrier, while a somatic variant is usually subclonal and variable. It is a proxy confounded by tumour purity, ploidy and loss of heterozygosity, so it is reported for your review and never used to drop a row.
+
+**Cohort recurrence is deliberately not offered.** Flagging a variant because it recurs across most of the cohort cannot distinguish a polymorphism from the recurrent hotspot that defines a histology. In a seven-sample DMG cohort, H3-3A K27M occurs at the identical base in roughly 75% of cases, so a "present in every sample" rule deletes the single most important row about one time in eight. At realistic cohort sizes the estimator has no resolving power anyway: an observed 50% at n = 14 has a 95% interval of 23% to 77%. Gates 1 and 2 rest on evidence about the variant; cohort frequency rests on how often you happened to sequence it.
+
+**None of this is somatic calling.** These gates reduce germline contamination in a tumour-only analysis. They do not make your calls somatic. If you have matched normals for every case, call somatic variants properly with a tool built for it and feed the result in as Option A.
 
 ### Step 2: decide which genes are candidates
 
@@ -166,7 +201,7 @@ This reads `gene_list.csv`, takes every row with `include = TRUE`, and re-derive
 
 For each gene × sample cell it collects every alteration class seen there, orders them most-severe-first by `precedence`, and joins them with `;` - the format `oncoPrint()` expects for co-occurring alterations. Classes with a smaller `height` are drawn on top of taller ones, so a gene that's both frameshifted and missense in the same sample shows both.
 
-Samples with no alteration at all still get a column. If you supply `sample_annotation.csv`, that file sets which samples exist and in what order, so a sequenced-but-unaltered sample isn't quietly dropped from the denominator.
+Samples with no alteration at all still get a column. If you supply `sample_annotation.csv`, that file sets which samples exist and therefore the denominator, so a sequenced-but-unaltered sample isn't quietly dropped. It does **not** set the left-to-right order: that comes from `oncoPrint()`'s own memo-sort unless you set `sample_order`. Any sample marked as a germline normal by `germline_type_value` is excluded from the figure and from every percentage - it's a reference, not a case.
 
 ## Note file format (`gene_whitelist.txt` / `gene_blacklist.txt`)
 
@@ -187,7 +222,7 @@ Samples with no alteration at all still get a column. If you supply `sample_anno
 | `plot` | `TRUE`/`FALSE` - whether this class is drawn. A `FALSE` row still documents the mapping; it just doesn't reach the figure. |
 | `precedence` | Lower = more severe. Decides which class is listed first in a cell with several alterations. Taken per class as the minimum across its terms. |
 | `color` | Hex colour for the class. Taken from the first row of that class. |
-| `height` | Fraction of the cell height the bar fills, 0-1. Taller bars are drawn first, so give co-occurring classes different heights to keep both visible. |
+| `height` | Fraction of the cell height the bar fills, 0-1. Taller bars are drawn first, so **every plotted class needs a distinct height** - two classes at the same height draw identical rectangles and the second one paints the first out completely, leaving the figure disagreeing with `oncoprint_matrix.csv`. Section 2 warns if it finds a tie. |
 | `notes` | Free text, entirely yours. Never read by the script. |
 
 To draw something the defaults don't - structural variants, CNVs from a separate caller - add rows with your own `consequence` values and a new `class`, and make sure your variant table uses those exact terms in its consequence column. Nothing about the script is SnpEff-specific past Section 0.
@@ -198,6 +233,7 @@ To draw something the defaults don't - structural variants, CNVs from a separate
 |---|---|
 | `include` | `TRUE`/`FALSE` - whether this gene is a row in the figure. Along with `gene`, the only column Section 2 actually requires. |
 | `gene` | Gene symbol, matched case-insensitively against your variant table. |
+| `median_vaf` | Present only when `cols$ao` and `cols$ro` are set. Median within-sample allele fraction across this gene's variants: near 0.50 or 1.00 suggests inherited. Advisory - nothing filters on it. |
 | `n_samples` | How many samples have a plottable alteration in this gene. Auto-filled if blank. |
 | `pct_samples` | The same as a percentage of all samples. Auto-filled if blank. |
 | `n_variants` | Total plottable variant rows for this gene. Auto-filled if blank. |
@@ -233,11 +269,15 @@ All in the CONFIG chunk at the top of `Build_Oncoprint.rmd`:
 | `variant_table` | Your long annotated variant table. Defaults to what Section 0 writes. |
 | `cols` | Which columns of *your* table mean what. See [Input table format](#input-table-format). |
 | `vcf_dir` | Folder of SnpEff VCFs for Section 0. `NA` skips it. |
-| `min_qual` | QUAL floor when reading VCFs. Default 30. |
+| `min_qual` | QUAL floor when reading VCFs. Default 30. Skipped, with a message, for a file whose `QUAL` is non-numeric (`.`). |
 | `filename_fields` | Named regexes pulling sample metadata out of each VCF's file name. |
 | `impact_whitelist` | SnpEff impact levels to keep. `NULL` keeps all. Default `HIGH` + `MODERATE`. |
 | `min_samples_mutated` | Drop genes altered in fewer than this many samples. Default 2; 1 keeps everything. |
 | `top_n_genes` | Cap on panel size, by recurrence then variant count. `NA` for no cap. Default 40. |
+| `germline_type_value` | Value of `cols$type` marking a sample as a normal, e.g. `"Germline"`. `NA` disables gate 1. Normals are excluded from the figure and from every percentage. See [Step 1b](#step-1b-filter-out-inherited-variants). |
+| `germline_scope` | `"matched"` subtracts a normal from its own donor only (needs `cols$donor`); `"cohort"` treats all normals as a panel. Default `"matched"`. |
+| `germline_min_normals` | Under `"cohort"` scope, how many normals must carry a variant before it is dropped. Default 1. |
+| `max_pop_af` | Population-frequency ceiling for gate 2. Default `0.01`. Needs `cols$pop_af`; a column named exactly `AF` is refused. |
 | `out_name` | Basename for the written files. |
 | `plot_title` | Title drawn above the figure. |
 | `sample_order` / `gene_order` | Explicit orderings. `NULL` = memo-sort columns, recurrence-sort rows. |
@@ -279,15 +319,15 @@ output/
 If you publish a figure produced by this tool, cite the underlying software, not just this script:
 
 **ComplexHeatmap (draws the oncoprint):**
-> Gu Z, Eils R, Schlesner M. Complex heatmaps reveal patterns and correlations in multidimensional genomic data. *Bioinformatics*. 2016;32(18):2847-2849.
+> Gu Z, Eils R, Schlesner M. Complex heatmaps reveal patterns and correlations in multidimensional genomic data. *Bioinformatics*. 2016;32(18):2847-2849. doi:[10.1093/bioinformatics/btw313](https://doi.org/10.1093/bioinformatics/btw313)
 
-> Gu Z. Complex heatmap visualization. *iMeta*. 2022;1(3):e43.
+> Gu Z. Complex heatmap visualization. *iMeta*. 2022;1(3):e43. doi:[10.1002/imt2.43](https://doi.org/10.1002/imt2.43)
 
 **SnpEff (produces the annotations Section 0 parses):**
-> Cingolani P, Platts A, Wang LL, et al. A program for annotating and predicting the effects of single nucleotide polymorphisms, SnpEff. *Fly*. 2012;6(2):80-92.
+> Cingolani P, Platts A, Wang LL, et al. A program for annotating and predicting the effects of single nucleotide polymorphisms, SnpEff. *Fly*. 2012;6(2):80-92. doi:[10.4161/fly.19695](https://doi.org/10.4161/fly.19695)
 
 **vcfR (reads the VCFs):**
-> Knaus BJ, Grünwald NJ. vcfR: a package to manipulate and visualize variant call format data in R. *Molecular Ecology Resources*. 2017;17(1):44-53.
+> Knaus BJ, Grünwald NJ. vcfR: a package to manipulate and visualize variant call format data in R. *Molecular Ecology Resources*. 2017;17(1):44-53. doi:[10.1111/1755-0998.12549](https://doi.org/10.1111/1755-0998.12549)
 
 For the exact, current citation of any of these as installed on your machine, run `citation("ComplexHeatmap")` or `citation("vcfR")` in R - these change between versions, so don't copy a citation from anywhere (including here) without checking that first.
 
@@ -303,7 +343,7 @@ For quick reference, the same details in a few common formats:
 > Balagopal, N. K. (2026). *Oncoprint Builder* [Computer software]. GitHub. https://github.com/navinvent/Oncoprint_Builder
 
 **APA:**
-> Balagopal, N. K. (2026). *Oncoprint Builder* (Version 1.0.0) [Computer software]. GitHub. https://github.com/navinvent/Oncoprint_Builder. ORCID: [0000-0002-3012-2469](https://orcid.org/0000-0002-3012-2469)
+> Balagopal, N. K. (2026). *Oncoprint Builder* (Version 1.1.0) [Computer software]. GitHub. https://github.com/navinvent/Oncoprint_Builder. ORCID: [0000-0002-3012-2469](https://orcid.org/0000-0002-3012-2469)
 
 **BibTeX** (`@software` - if your BibTeX style doesn't support the `software` entry type, e.g. plain `bibtex` rather than `biblatex`, use `@misc` instead, shown second):
 
