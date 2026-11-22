@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this tool, please cite it as below."
+type: software
+title: "Oncoprint Builder"
+abstract: "A whitelist/blacklist-driven tool for building oncoprints from annotated variant data, using editable note files and a reviewable gene CSV instead of hardcoded gene vectors. Parses SnpEff-annotated VCFs or any long variant table, and renders with ComplexHeatmap."
+authors:
+  - given-names: "Navin Kumar"
+    family-names: "Balagopal"
+    alias: "navinvent"
+    orcid: "https://orcid.org/0000-0002-3012-2469"
+repository-code: "https://github.com/navinvent/Oncoprint_Builder"
+url: "https://github.com/navinvent/Oncoprint_Builder"
+license: "MIT"
+date-released: "2026-11-22"
+version: "1.0.0"
+keywords:
+  - oncoprint
+  - oncoplot
+  - somatic-variants
+  - SnpEff
+  - VCF
+  - ComplexHeatmap
+  - cancer-genomics
+  - bioinformatics

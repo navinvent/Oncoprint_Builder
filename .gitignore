@@ -1,0 +1,17 @@
+# Live working files, regenerated or hand-edited per-run - not shipped
+/gene_list.csv
+/gene_list_draft.csv
+/sample_annotation.csv
+/output/
+
+# R / editor noise
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+*.nb.html
+*_cache/
+*_files/
+.DS_Store
+Thumbs.db

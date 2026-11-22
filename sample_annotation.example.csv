@@ -1,0 +1,13 @@
+"SampleID","CancerType","Type","Sex","Age_at_dx"
+"MAF1458","RIG","Patient","F",14
+"MAF1463","RIG","Patient","M",11
+"MAF1813","RIG","Cellline","F",9
+"MAF868","RIG","Cellline","M",16
+"RCK833","RIG","Cellline","F",12
+"BT245","DMG","Cellline","M",7
+"DIPG4","DMG","Cellline","F",6
+"DIPG13","DMG","Cellline","M",8
+"DIPG17","DMG","Cellline","F",5
+"SCG1","DMG","Cellline","M",9
+"GBM2","DHG","Cellline","M",15
+"DIPG10","PHGG","Cellline","F",10

@@ -1,0 +1,45 @@
+consequence,class,plot,precedence,color,height,notes
+stop_gained,Nonsense,TRUE,1,#B2182B,1.00,Premature stop codon
+stop_lost,Nonsense,TRUE,1,#B2182B,1.00,Loss of stop codon - read-through
+start_lost,Nonsense,TRUE,1,#B2182B,1.00,Loss of start codon
+frameshift_variant,Frameshift,TRUE,2,#6A3D9A,1.00,Indel not a multiple of three
+exon_loss_variant,Frameshift,TRUE,2,#6A3D9A,1.00,Whole exon lost
+splice_acceptor_variant,Splice,TRUE,3,#FF7F00,0.80,Canonical acceptor site
+splice_donor_variant,Splice,TRUE,3,#FF7F00,0.80,Canonical donor site
+splice_region_variant,Splice,FALSE,3,#FF7F00,0.80,Near-splice - noisy; off by default
+inframe_insertion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame insertion
+inframe_deletion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame deletion
+disruptive_inframe_insertion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame insertion disrupting a codon
+disruptive_inframe_deletion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame deletion disrupting a codon
+conservative_inframe_insertion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame insertion between codons
+conservative_inframe_deletion,Inframe_indel,TRUE,4,#A6761D,0.80,In-frame deletion between codons
+missense_variant,Missense,TRUE,5,#1F78B4,0.45,Single amino acid substitution
+initiator_codon_variant,Missense,TRUE,5,#1F78B4,0.45,Start codon altered but retained
+rare_amino_acid_variant,Missense,TRUE,5,#1F78B4,0.45,Substitution to a rare residue
+protein_protein_contact,Missense,FALSE,5,#1F78B4,0.45,Structural annotation; off by default
+structural_interaction_variant,Missense,FALSE,5,#1F78B4,0.45,Structural annotation; off by default
+synonymous_variant,Synonymous,FALSE,6,#B3B3B3,0.45,No amino acid change
+start_retained_variant,Synonymous,FALSE,6,#B3B3B3,0.45,Start codon changed but retained
+stop_retained_variant,Synonymous,FALSE,6,#B3B3B3,0.45,Stop codon changed but retained
+5_prime_UTR_variant,UTR,FALSE,7,#80B1D3,0.30,Five prime UTR
+3_prime_UTR_variant,UTR,FALSE,7,#80B1D3,0.30,Three prime UTR
+5_prime_UTR_premature_start_codon_gain_variant,UTR,FALSE,7,#80B1D3,0.30,New start codon upstream
+3_prime_UTR_truncation,UTR,FALSE,7,#80B1D3,0.30,Three prime UTR truncated
+5_prime_UTR_truncation,UTR,FALSE,7,#80B1D3,0.30,Five prime UTR truncated
+intron_variant,Intron,FALSE,8,#D9D9D9,0.30,Intronic
+intragenic_variant,Intron,FALSE,8,#D9D9D9,0.30,Within gene but no transcript assigned
+conserved_intron_variant,Intron,FALSE,8,#D9D9D9,0.30,Conserved intronic position
+non_coding_transcript_exon_variant,Noncoding,FALSE,9,#BC80BD,0.30,Exon of a non-coding transcript
+non_coding_transcript_variant,Noncoding,FALSE,9,#BC80BD,0.30,Non-coding transcript
+upstream_gene_variant,Other,FALSE,10,#CCCCCC,0.30,Upstream of gene
+downstream_gene_variant,Other,FALSE,10,#CCCCCC,0.30,Downstream of gene
+intergenic_region,Other,FALSE,10,#CCCCCC,0.30,Between genes
+conserved_intergenic_variant,Other,FALSE,10,#CCCCCC,0.30,Conserved intergenic position
+TF_binding_site_variant,Other,FALSE,10,#CCCCCC,0.30,Transcription factor binding site
+regulatory_region_variant,Other,FALSE,10,#CCCCCC,0.30,Annotated regulatory region
+sequence_feature,Other,FALSE,10,#CCCCCC,0.30,Generic SnpEff sequence feature
+gene_fusion,Fusion,TRUE,2,#E7298A,1.00,Gene fusion
+bidirectional_gene_fusion,Fusion,TRUE,2,#E7298A,1.00,Bidirectional gene fusion
+feature_ablation,Deletion,TRUE,1,#404040,1.00,Feature deleted - e.g. whole-gene deletion
+duplication,Amplification,TRUE,4,#E31A1C,1.00,Feature duplicated
+inversion,Structural,TRUE,4,#33A02C,1.00,Inversion

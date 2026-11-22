@@ -1,0 +1,71 @@
+# gene_blacklist.txt
+#
+# One pattern per line, same matching rules as gene_whitelist.txt (exact
+# symbol match unless the line contains a regex metacharacter).
+#
+# Anything matching a line here is dropped even if it also matched the
+# whitelist - THE BLACKLIST ALWAYS WINS. There is no way to force-include a
+# gene the blacklist also matches other than removing or editing the blacklist
+# line, or re-adding the gene by hand as a row in gene_list.csv (which bypasses
+# both files entirely - see the README).
+#
+# Lines starting with # and blank lines are ignored.
+#
+# Use this for genes that are recurrently "mutated" for reasons that are not
+# biology: long genes that accumulate passenger variants in proportion to their
+# length, well-known alignment-artefact loci, highly polymorphic families, and
+# pseudogene / non-coding entries that SnpEff happily annotates but which mean
+# nothing in an oncoprint. The defaults below are the usual suspects for exome
+# data; they are a starting point, not gospel. Delete any line whose gene you
+# actually care about.
+
+# ---- Very long genes: recurrence tracks gene length, not selection ----
+TTN
+MUC16
+^MUC[0-9]
+OBSCN
+RYR1
+RYR2
+RYR3
+^NEB$
+SYNE1
+SYNE2
+^PLEC$
+^AHNAK
+^DNAH
+^FLG$
+^FLG2$
+^HMCN1$
+^USH2A$
+^FAT[1-4]$
+^CSMD[1-3]$
+^LRP1B$
+^PCLO$
+^ZFHX[34]$
+
+# ---- Highly polymorphic / immune families: germline diversity, not somatic ----
+^HLA-
+^OR[0-9]+[A-Z]
+^KRTAP
+^PRAMEF
+^TAS2R
+^NBPF
+^ANKRD3[0-9]
+^GOLGA[0-9]
+
+# ---- Not genes, or not interpretable in an oncoprint ----
+^CHR_START
+^CHR_END
+^$
+^LINC[0-9]
+^MIR[0-9]
+^SNOR
+^RNU[0-9]
+^RNA5S
+^LOC[0-9]
+^AC[0-9]{6}
+^AL[0-9]{6}
+^AP[0-9]{6}
+-AS[0-9]$
+^WASH[0-9]P$
+^DDX11L

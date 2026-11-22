@@ -1,0 +1,140 @@
+# gene_whitelist.txt
+#
+# One pattern per line. Any variant whose gene symbol matches a line here
+# (case-insensitive, anchored match by default - see below) is a candidate for
+# inclusion in the next oncoprint. A full exact symbol is just a pattern that
+# happens to match only itself, so exact symbols and loose patterns can be
+# mixed freely.
+#
+# MATCHING: a line containing only letters, digits, hyphens and underscores is
+# treated as an EXACT symbol match (case-insensitive). This is the common case
+# and it stops "RB1" from also pulling in "RB1CC1". A line containing any
+# regex metacharacter (^ $ . * + ? [ ] ( ) | \) is treated as a regex and
+# matched as a substring, so "^H3-" catches the whole histone family and
+# "KMT2[ABCD]" catches four genes at once.
+#
+# Lines starting with # and blank lines are ignored.
+# Edit this file directly to change which genes are considered - no need to
+# touch Build_Oncoprint.rmd.
+#
+# NOTE: this only matches the gene symbol. Which variants are eligible at all
+# (functional impact, consequence class, QUAL) is handled separately, before
+# this file runs, by impact_whitelist in Build_Oncoprint.rmd's CONFIG block and
+# by the plot/class columns of consequence_classes.csv. So a gene listed here
+# still contributes nothing if all of its variants are, say, MODIFIER-impact
+# intron variants and MODIFIER is not in impact_whitelist.
+#
+# An empty whitelist (every line commented out) means "consider every gene"
+# and lets recurrence alone pick the panel - useful for a first look at a new
+# cohort. Use top_n_genes in CONFIG to keep that readable.
+
+# ---- Chromatin / histone (pediatric high-grade glioma core) ----
+^H3-
+H3F3A
+H3F3B
+HIST1H3B
+HIST1H3C
+ATRX
+DAXX
+^SMARC
+^ARID1
+^KMT2[ABCD]$
+^KDM
+SETD2
+EZH2
+EZHIP
+BRD4
+CREBBP
+EP300
+
+# ---- Cell cycle / tumour suppressors ----
+TP53
+PPM1D
+RB1
+CDKN2A
+CDKN2B
+CDK4
+CDK6
+CCND1
+CCND2
+MDM2
+MDM4
+CHEK2
+ATM
+ATR
+
+# ---- Receptor tyrosine kinase / RAS / PI3K ----
+EGFR
+ERBB2
+ERBB3
+ERBB4
+PDGFRA
+PDGFRB
+KIT
+FGFR1
+FGFR2
+FGFR3
+MET
+ALK
+NTRK1
+NTRK2
+NTRK3
+ROS1
+KRAS
+NRAS
+HRAS
+NF1
+BRAF
+RAF1
+MAP2K1
+PIK3CA
+PIK3R1
+PTEN
+AKT1
+AKT2
+AKT3
+MTOR
+TSC1
+TSC2
+
+# ---- Telomere / replication ----
+TERT
+TERF1
+POLE
+POLD1
+
+# ---- DNA repair / BRCAness (radiation-induced glioma relevant) ----
+BRCA1
+BRCA2
+PALB2
+RAD51
+RAD51C
+RAD51D
+FANCA
+FANCD2
+MLH1
+MSH2
+MSH6
+PMS2
+MUTYH
+NBN
+XRCC1
+ERCC2
+LIG4
+
+# ---- Developmental / lineage ----
+^SOX
+^OLIG
+^NKX2-
+PAX3
+PAX7
+MYC
+MYCN
+GLI1
+GLI2
+PTCH1
+SUFU
+CTNNB1
+APC
+NOTCH1
+NOTCH2
